@@ -1,0 +1,137 @@
+# ============================================================
+# Nextcloud Fast Stack 2026
+# https://github.com/snuffomega/nextcloud-fast-stack
+#
+# Nextcloud runs internally on http://nextcloud-caddy:${CADDY_PORT}
+# No ports are exposed to the host — wire it to your own
+# reverse proxy, Tailscale, Cloudflare Tunnel, etc.
+#
+# Quick start:
+#   cp .env.example .env   # fill in passwords
+#   docker compose up -d
+#
+# Unraid: append -f docker-compose.unraid.yml
+# FrankenPHP (experimental): cd frankenphp && docker compose up -d
+# ============================================================
+
+services:
+
+  # ── Nextcloud (PHP-FPM) ────────────────────────────────
+  nextcloud:
+    image: nextcloud:33-fpm-alpine
+    container_name: nextcloud
+    restart: unless-stopped
+    depends_on:
+      nextcloud-db:
+        condition: service_healthy
+      nextcloud-redis:
+        condition: service_started
+    environment:
+      POSTGRES_HOST: nextcloud-db
+      POSTGRES_DB: ${POSTGRES_DB:-nextcloud}
+      POSTGRES_USER: ${POSTGRES_USER:-nextcloud}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      REDIS_HOST: nextcloud-redis
+      REDIS_PORT: 6379
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER:-admin}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?Set NEXTCLOUD_ADMIN_PASSWORD in .env}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - html:/var/www/html
+      - nextcloud_data:/var/www/html/data
+      - ./config/php-fpm.conf:/usr/local/etc/php-fpm.d/zzz-custom.conf:ro
+      - ./config/php-opcache.ini:/usr/local/etc/php/conf.d/opcache.ini:ro
+    networks:
+      - nextcloud_net
+
+  # ── Caddy (internal PHP-FPM proxy) ──────────────────────
+  # Listens on CADDY_PORT (default 8080) inside the Docker network.
+  # Nothing is published to the host — point your reverse proxy here.
+  # Change CADDY_PORT in .env if 8080 conflicts with another container.
+  nextcloud-caddy:
+    image: caddy:2-alpine
+    container_name: nextcloud-caddy
+    restart: unless-stopped
+    depends_on:
+      - nextcloud
+    environment:
+      CADDY_PORT: ${CADDY_PORT:-8080}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - html:/var/www/html:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - nextcloud_net
+
+  # ── PostgreSQL 17 ─────────────────────────────────────
+  nextcloud-db:
+    image: postgres:17-alpine
+    container_name: nextcloud-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nextcloud}
+      POSTGRES_USER: ${POSTGRES_USER:-nextcloud}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - nextcloud_db:/var/lib/postgresql/data
+      - ./config/postgres.conf:/etc/postgresql/postgresql.conf:ro
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nextcloud} -d ${POSTGRES_DB:-nextcloud}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nextcloud_net
+
+  # ── Redis 7 ─────────────────────────────────────────────
+  # --save "" disables RDB snapshots for lower latency.
+  # Swap to "--appendonly yes" if you need Redis durability.
+  nextcloud-redis:
+    image: redis:7-alpine
+    container_name: nextcloud-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+        --save ""
+        --maxmemory 512mb
+        --maxmemory-policy allkeys-lru
+    volumes:
+      - nextcloud_redis:/data
+    networks:
+      - nextcloud_net
+
+  # ── Imaginary (optional — preview generation offloading) ──
+  # Uncomment to offload thumbnail/preview generation to this
+  # Go-based microservice (~60% faster previews than built-in).
+  #
+  # After enabling, add to Nextcloud config.php:
+  #   'enabledPreviewProviders' => ['OC\Preview\Imaginary'],
+  #   'preview_imaginary_url'   => 'http://imaginary:9000',
+  #
+  # imaginary:
+  #   image: nextcloud/aio-imaginary:latest
+  #   container_name: nextcloud-imaginary
+  #   restart: unless-stopped
+  #   environment:
+  #     PORT: "9000"
+  #   cap_add:
+  #     - SYS_NICE
+  #   networks:
+  #     - nextcloud_net
+
+# ── Networks ──────────────────────────────────────────────
+networks:
+  nextcloud_net:
+    driver: bridge
+
+# ── Volumes ──────────────────────────────────────────────
+volumes:
+  html:             # Nextcloud app files (shared: nextcloud ↔ caddy)
+  nextcloud_data:   # User data files
+  nextcloud_db:     # PostgreSQL data directory
+  nextcloud_redis:  # Redis data
+  caddy_data:       # Caddy configuration cache
+  caddy_config:     # Caddy runtime config
