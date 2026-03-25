@@ -61,6 +61,6 @@ RUN mv "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"
 COPY config/php-opcache.ini /usr/local/etc/php/conf.d/opcache.ini
 
 # ── Caddyfile ─────────────────────────────────────────────
-COPY frankenphp/Caddyfile /etc/caddy/Caddyfile
+COPY Caddyfile /etc/caddy/Caddyfile
 
 WORKDIR /var/www/html

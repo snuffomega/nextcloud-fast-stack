@@ -15,7 +15,7 @@
 #   cd frankenphp
 #   docker compose up -d --build
 #
-# Prerequisites: copy ../.env.example -> ../.env and fill in.
+# Prerequisites: copy .env.example -> .env and fill in.
 # ============================================================
 
 services:
@@ -23,8 +23,8 @@ services:
   # ── FrankenPHP (PHP + Caddy, single container) ──────────
   nextcloud:
     build:
-      context: ..
-      dockerfile: frankenphp/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     container_name: nextcloud-frankenphp
     restart: unless-stopped
     depends_on:
@@ -40,14 +40,19 @@ services:
       SERVER_NAME: ":${CADDY_PORT:-8080}"
       REDIS_HOST: nextcloud-redis
       REDIS_PORT: 6379
+      NEXTCLOUD_TRUSTED_DOMAINS: ${NEXTCLOUD_DOMAIN:?Set NEXTCLOUD_DOMAIN in .env}
       TZ: ${TZ:-UTC}
     volumes:
       - html:/var/www/html
       - nextcloud_data:/var/www/html/data
     # No ports: block -- internal only, same pattern as the standard stack
     networks:
-      - nextcloud_net
-
+      - nextcloud_net    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:${CADDY_PORT:-8080}/status.php 2>/dev/null | grep -q installed || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
   # ── Init (one-shot setup) ────────────────────────────────
   # Uses the official Nextcloud image to copy app files and
   # run occ maintenance:install into the shared html volume,
@@ -62,9 +67,9 @@ services:
       POSTGRES_HOST: ${POSTGRES_HOST:-nextcloud-db}
       POSTGRES_DB: ${POSTGRES_DB:-nextcloud}
       POSTGRES_USER: ${POSTGRES_USER:-nextcloud}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in ../.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER:-admin}
-      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?Set NEXTCLOUD_ADMIN_PASSWORD in ../.env}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?Set NEXTCLOUD_ADMIN_PASSWORD in .env}
       NEXTCLOUD_TRUSTED_DOMAINS: ${NEXTCLOUD_DOMAIN}
     volumes:
       - html:/var/www/html
@@ -83,11 +88,11 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-nextcloud}
       POSTGRES_USER: ${POSTGRES_USER:-nextcloud}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in ../.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       TZ: ${TZ:-UTC}
     volumes:
       - nextcloud_db:/var/lib/postgresql/data
-      - ../config/postgres.conf:/etc/postgresql/postgresql.conf:ro
+      - ./config/postgres.conf:/etc/postgresql/postgresql.conf:ro
     command: postgres -c config_file=/etc/postgresql/postgresql.conf
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nextcloud} -d ${POSTGRES_DB:-nextcloud}"]
@@ -98,6 +103,8 @@ services:
       - nextcloud_net
 
   # ── Redis 7 ─────────────────────────────────────────────
+  # AOF persistence protects file locks; volatile-lru evicts only
+  # TTL-bearing cache keys, leaving lock entries intact.
   nextcloud-redis:
     image: redis:7-alpine
     container_name: nextcloud-redis
@@ -105,13 +112,31 @@ services:
     command: >
       redis-server
         --save ""
+        --appendonly yes
         --maxmemory 512mb
-        --maxmemory-policy allkeys-lru
+        --maxmemory-policy volatile-lru
     volumes:
       - nextcloud_redis:/data
     networks:
       - nextcloud_net
-
+  # ── Cron (background jobs) ──────────────────────────────
+  # Required for activity feeds, notifications, share expiry,
+  # and all app-level background tasks. Calls occ cron every 5 min.
+  nextcloud-cron:
+    image: nextcloud:33-fpm-alpine
+    container_name: nextcloud-cron
+    restart: unless-stopped
+    entrypoint: ["/cron.sh"]
+    depends_on:
+      nextcloud:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - html:/var/www/html
+      - nextcloud_data:/var/www/html/data
+    networks:
+      - nextcloud_net
 # ── Networks ────────────────────────────────────────────────
 networks:
   nextcloud_net:
