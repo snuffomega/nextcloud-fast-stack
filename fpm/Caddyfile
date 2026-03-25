@@ -1,0 +1,56 @@
+# Nextcloud Fast Stack 2026 -- Caddyfile
+# Caddy is an internal PHP-FPM proxy only. No TLS, no public ports.
+# CADDY_PORT is set via environment in docker-compose.yml (.env default: 8080).
+# Your reverse proxy (Traefik, Nginx, Caddy host instance, etc.) connects here.
+
+:8080 {
+
+    encode zstd gzip
+
+    # -- Security headers ----------------------------------------
+    # TLS headers (HSTS etc.) are omitted -- your reverse proxy handles these.
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        X-Permitted-Cross-Domain-Policies "none"
+        X-Robots-Tag "noindex, nofollow"
+        Referrer-Policy "no-referrer"
+        -X-Powered-By
+    }
+
+    # -- Well-known redirects ------------------------------------
+    redir /.well-known/carddav   /remote.php/dav 301
+    redir /.well-known/caldav    /remote.php/dav 301
+    redir /.well-known/webfinger /index.php/.well-known/webfinger 301
+    redir /.well-known/nodeinfo  /index.php/.well-known/nodeinfo  301
+
+    # -- Block sensitive paths -----------------------------------
+    @sensitive {
+        path /.htaccess
+        path /data/*
+        path /config/*
+        path /db_structure
+        path /.xml
+        path /README
+        path /3rdparty/*
+        path /lib/*
+        path /templates/*
+        path /occ
+        path /console.php
+    }
+    respond @sensitive 403
+
+    # -- PHP-FPM -------------------------------------------------
+    root * /var/www/html
+
+    php_fastcgi nextcloud:9000 {
+        root /var/www/html
+        env front_controller_active true
+        env modHeadersAvailable true
+        # Tell Nextcloud HTTPS is handled upstream by your reverse proxy
+        env HTTPS on
+        trusted_proxies private_ranges
+    }
+
+    file_server
+}
