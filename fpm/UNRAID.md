@@ -1,40 +1,47 @@
 # Unraid Setup — Nextcloud Fast Stack 2026
 
-Unraid stores container data under `/mnt/user/appdata/` rather than named
-Docker volumes. Use the volume overrides below when running the stack.
+By default all data is stored in `./data/` relative to `docker-compose.yml`.
+On Unraid you likely want data under `/mnt/user/appdata/` instead.
+
+There are two ways to do this:
 
 ---
 
-## 1. Create directories
+## Option A — Symlink (easiest, no compose edits)
 
 ```bash
-mkdir -p /mnt/user/appdata/nextcloud/{html,data,postgres,redis,caddy/data,caddy/config}
+mkdir -p /mnt/user/appdata/nextcloud
+ln -s /mnt/user/appdata/nextcloud /path/to/nextcloud-fast-stack/fpm/data
 ```
 
-## 2. Start with bind-mount overrides
+Docker sees `./data/` and writes to `/mnt/user/appdata/nextcloud/` transparently.
+
+---
+
+## Option B — Edit docker-compose.yml directly
+
+Replace every `./data/` prefix with `/mnt/user/appdata/nextcloud/`:
+
+| Default path | Unraid path |
+|---|---|
+| `./data/html` | `/mnt/user/appdata/nextcloud/html` |
+| `./data/userdata` | `/mnt/user/appdata/nextcloud/userdata` |
+| `./data/postgres` | `/mnt/user/appdata/nextcloud/postgres` |
+| `./data/redis` | `/mnt/user/appdata/nextcloud/redis` |
+| `./data/caddy/data` | `/mnt/user/appdata/nextcloud/caddy/data` |
+| `./data/caddy/config` | `/mnt/user/appdata/nextcloud/caddy/config` |
+
+Create the directories first:
 
 ```bash
-docker compose -f docker-compose.yml up -d \
-  --volume /mnt/user/appdata/nextcloud/html:/var/www/html \
-  --volume /mnt/user/appdata/nextcloud/data:/var/www/html/data
+mkdir -p /mnt/user/appdata/nextcloud/{html,userdata,postgres,redis,caddy/data,caddy/config}
 ```
 
-Or simply edit the `volumes:` section in `docker-compose.yml` directly,
-replacing named volumes with the paths below:
+Then `docker compose up -d` as normal.
 
-| Service | Named volume | Unraid path |
-|---|---|---|
-| `nextcloud` | `html:/var/www/html` | `/mnt/user/appdata/nextcloud/html:/var/www/html` |
-| `nextcloud` | `nextcloud_data:/var/www/html/data` | `/mnt/user/appdata/nextcloud/data:/var/www/html/data` |
-| `nextcloud-caddy` | `html:/var/www/html:ro` | `/mnt/user/appdata/nextcloud/html:/var/www/html:ro` |
-| `nextcloud-caddy` | `caddy_data:/data` | `/mnt/user/appdata/nextcloud/caddy/data:/data` |
-| `nextcloud-caddy` | `caddy_config:/config` | `/mnt/user/appdata/nextcloud/caddy/config:/config` |
-| `nextcloud-db` | `nextcloud_db:/var/lib/postgresql/data` | `/mnt/user/appdata/nextcloud/postgres:/var/lib/postgresql/data` |
-| `nextcloud-redis` | `nextcloud_redis:/data` | `/mnt/user/appdata/nextcloud/redis:/data` |
+---
 
-## 3. Post-install
-
-Same as the main README — run the `occ` commands once Nextcloud is accessible:
+## Post-install
 
 ```bash
 docker exec -u www-data nextcloud php occ db:add-missing-indices

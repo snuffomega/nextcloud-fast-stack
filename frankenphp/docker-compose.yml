@@ -7,6 +7,12 @@
 # ports are exposed. Wire to your reverse proxy the same way
 # as the standard stack.
 #
+# All persistent data lives in ./data/ next to this file:
+#   ./data/html/      Nextcloud app files
+#   ./data/userdata/  User files
+#   ./data/postgres/  PostgreSQL data
+#   ./data/redis/     Redis AOF data
+#
 # First run: nextcloud-init populates app files and the DB,
 # then exits. FrankenPHP starts after init completes.
 # Subsequent restarts: init is skipped (restart: "no").
@@ -43,8 +49,8 @@ services:
       NEXTCLOUD_TRUSTED_DOMAINS: ${NEXTCLOUD_DOMAIN:?Set NEXTCLOUD_DOMAIN in .env}
       TZ: ${TZ:-UTC}
     volumes:
-      - html:/var/www/html
-      - nextcloud_data:/var/www/html/data
+      - ./data/html:/var/www/html
+      - ./data/userdata:/var/www/html/data
     # No ports: block -- internal only, same pattern as the standard stack
     networks:
       - nextcloud_net
@@ -74,8 +80,8 @@ services:
       NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?Set NEXTCLOUD_ADMIN_PASSWORD in .env}
       NEXTCLOUD_TRUSTED_DOMAINS: ${NEXTCLOUD_DOMAIN}
     volumes:
-      - html:/var/www/html
-      - nextcloud_data:/var/www/html/data
+      - ./data/html:/var/www/html
+      - ./data/userdata:/var/www/html/data
     depends_on:
       nextcloud-db:
         condition: service_healthy
@@ -93,7 +99,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       TZ: ${TZ:-UTC}
     volumes:
-      - nextcloud_db:/var/lib/postgresql/data
+      - ./data/postgres:/var/lib/postgresql/data
       - ./config/postgres.conf:/etc/postgresql/postgresql.conf:ro
     command: postgres -c config_file=/etc/postgresql/postgresql.conf
     healthcheck:
@@ -118,7 +124,7 @@ services:
         --maxmemory 512mb
         --maxmemory-policy volatile-lru
     volumes:
-      - nextcloud_redis:/data
+      - ./data/redis:/data
     networks:
       - nextcloud_net
 
@@ -136,8 +142,8 @@ services:
     environment:
       TZ: ${TZ:-UTC}
     volumes:
-      - html:/var/www/html
-      - nextcloud_data:/var/www/html/data
+      - ./data/html:/var/www/html
+      - ./data/userdata:/var/www/html/data
     networks:
       - nextcloud_net
 
@@ -174,9 +180,9 @@ services:
   #     FORGET_ARGS: "--keep-daily 7 --keep-weekly 4 --keep-monthly 3"
   #     CHECK_CRON: "0 4 * * 1"
   #   volumes:
-  #     - nextcloud_data:/source/userdata:ro
-  #     - html:/source/html:ro
-  #     - ${BACKUP_LOCAL_PATH:-/var/backups/nextcloud}:/backups
+  #     - ./data/userdata:/source/userdata:ro
+  #     - ./data/html:/source/html:ro
+  #     - ${BACKUP_LOCAL_PATH:-./data/backups}:/backups
   #   networks:
   #     - nextcloud_net
 
@@ -187,9 +193,5 @@ networks:
   # proxynet:        # Uncomment for Traefik
   #   external: true
 
-# ── Volumes ─────────────────────────────────────────────────
-volumes:
-  html:
-  nextcloud_data:
-  nextcloud_db:
-  nextcloud_redis:
+# Data directories are created automatically by Docker on first run.
+# All data lives in ./data/ relative to this docker-compose.yml file.
