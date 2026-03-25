@@ -100,6 +100,40 @@ Check **Admin → Basic settings** — "Last cron executed" should show within 1
 
 ---
 
+## Managing Trusted Domains
+
+**Important:** The `NEXTCLOUD_DOMAIN` environment variable only sets trusted domains during **first installation**. Once installed, they're permanent in `config.php`.
+
+### Add a New Domain or IP After Installation
+
+```bash
+# Add a new trusted domain
+docker exec -u www-data nextcloud php occ config:system:set trusted_domains 1 --value="192.168.1.100"
+
+# You can have multiple — just increment the index:
+docker exec -u www-data nextcloud php occ config:system:set trusted_domains 2 --value="my.domain.com"
+
+# View all trusted domains
+docker exec nextcloud cat /var/www/html/config/config.php | grep -A 10 "trusted_domains"
+```
+
+### Yes, You Can Have Both IP AND Domain
+
+Nextcloud's `trusted_domains` is an array—include as many as you need:
+```php
+'trusted_domains' => array(
+  0 => 'localhost',
+  1 => '10.10.1.161',              // Unraid server IP
+  2 => 'my-nextcloud.example.com', // External domain
+  3 => '192.168.1.100',            // Another IP
+  4 => 'nextcloud.local',          // Local hostname
+),
+```
+
+Each access URL is checked against this list. Use `-u www-data` to avoid permission issues.
+
+---
+
 ## External Access (HTTPS)
 
 This stack is HTTP-only on port 8080. For external HTTPS access, use one of these:

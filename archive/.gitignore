@@ -1,8 +1,0 @@
-# Secrets — never commit
-.env
-
-# Data directory (cc.db lives here)
-data/
-
-# Local reference notes
-local-notes/

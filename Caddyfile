@@ -5,50 +5,50 @@
 
 :8080 {
 
-    encode zstd gzip
+	encode zstd gzip
 
-    # -- Security headers ----------------------------------------
-    # TLS headers (HSTS, etc.) omitted — HTTP-only homelab setup.
-    header {
-        X-Content-Type-Options "nosniff"
-        X-Frame-Options "SAMEORIGIN"
-        X-Permitted-Cross-Domain-Policies "none"
-        X-Robots-Tag "noindex, nofollow"
-        Referrer-Policy "no-referrer"
-        -X-Powered-By
-    }
+	# -- Security headers ----------------------------------------
+	# TLS headers (HSTS, etc.) omitted — HTTP-only homelab setup.
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		X-Permitted-Cross-Domain-Policies "none"
+		X-Robots-Tag "noindex, nofollow"
+		Referrer-Policy "no-referrer"
+		-X-Powered-By
+	}
 
-    # -- Well-known redirects ------------------------------------
-    redir /.well-known/carddav   /remote.php/dav 301
-    redir /.well-known/caldav    /remote.php/dav 301
-    redir /.well-known/webfinger /index.php/.well-known/webfinger 301
-    redir /.well-known/nodeinfo  /index.php/.well-known/nodeinfo  301
+	# -- Well-known redirects ------------------------------------
+	redir /.well-known/carddav   /remote.php/dav 301
+	redir /.well-known/caldav    /remote.php/dav 301
+	redir /.well-known/webfinger /index.php/.well-known/webfinger 301
+	redir /.well-known/nodeinfo  /index.php/.well-known/nodeinfo  301
 
-    # -- Block sensitive paths -----------------------------------
-    @sensitive {
-        path /.htaccess
-        path /data/*
-        path /config/*
-        path /db_structure
-        path /.xml
-        path /README
-        path /3rdparty/*
-        path /lib/*
-        path /templates/*
-        path /occ
-        path /console.php
-    }
-    respond @sensitive 403
+	# -- Block sensitive paths -----------------------------------
+	@sensitive {
+		path /.htaccess
+		path /data/*
+		path /config/*
+		path /db_structure
+		path /.xml
+		path /README
+		path /3rdparty/*
+		path /lib/*
+		path /templates/*
+		path /occ
+		path /console.php
+	}
+	respond @sensitive 403
 
-    # -- PHP-FPM -------------------------------------------------
-    root * /var/www/html
+	# -- PHP-FPM -------------------------------------------------
+	root * /var/www/html
 
-    php_fastcgi nextcloud:9000 {
-        root /var/www/html
-        env front_controller_active true
-        env modHeadersAvailable true
-        trusted_proxies private_ranges
-    }
+	php_fastcgi nextcloud:9000 {
+		root /var/www/html
+		env front_controller_active true
+		env modHeadersAvailable true
+		trusted_proxies private_ranges
+	}
 
-    file_server
+	file_server
 }
