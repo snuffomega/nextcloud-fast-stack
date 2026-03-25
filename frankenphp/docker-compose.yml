@@ -47,12 +47,14 @@ services:
       - nextcloud_data:/var/www/html/data
     # No ports: block -- internal only, same pattern as the standard stack
     networks:
-      - nextcloud_net    healthcheck:
+      - nextcloud_net
+    healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:${CADDY_PORT:-8080}/status.php 2>/dev/null | grep -q installed || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 120s
+
   # ── Init (one-shot setup) ────────────────────────────────
   # Uses the official Nextcloud image to copy app files and
   # run occ maintenance:install into the shared html volume,
@@ -119,6 +121,7 @@ services:
       - nextcloud_redis:/data
     networks:
       - nextcloud_net
+
   # ── Cron (background jobs) ──────────────────────────────
   # Required for activity feeds, notifications, share expiry,
   # and all app-level background tasks. Calls occ cron every 5 min.
@@ -137,6 +140,46 @@ services:
       - nextcloud_data:/var/www/html/data
     networks:
       - nextcloud_net
+
+  # ── Backup (optional — encrypted incremental via Restic) ──
+  # Uncomment to enable encrypted, deduplicated backups of user data
+  # and app files. Uses restic — open-source, multi-backend.
+  #
+  # Before enabling:
+  #   1. Set BACKUP_PASSWORD in .env — encrypts all snapshots.
+  #      Losing it means permanent loss of backup access.
+  #   2. Set BACKUP_REPOSITORY to a local path or remote URI:
+  #        /backups/nextcloud           — local bind mount (default)
+  #        s3:s3.amazonaws.com/bucket   — AWS S3
+  #        b2:bucket-name               — Backblaze B2
+  #        sftp:user@host:/path         — SFTP
+  #   3. Set BACKUP_LOCAL_PATH to the host path (local repos only).
+  #   4. Uncomment this block and restart.
+  #
+  # Restore:
+  #   docker exec nextcloud-backup restic snapshots
+  #   docker exec nextcloud-backup restic restore latest --target /restore
+  #
+  # Note: backs up user data + app files only. For DB backup, see README.
+  #
+  # nextcloud-backup:
+  #   image: mazzolino/restic:1
+  #   container_name: nextcloud-backup
+  #   restart: unless-stopped
+  #   hostname: nextcloud-backup
+  #   environment:
+  #     BACKUP_CRON: ${BACKUP_CRON:-0 3 * * *}
+  #     RESTIC_REPOSITORY: ${BACKUP_REPOSITORY:-/backups/nextcloud}
+  #     RESTIC_PASSWORD: ${BACKUP_PASSWORD:?Set BACKUP_PASSWORD in .env}
+  #     FORGET_ARGS: "--keep-daily 7 --keep-weekly 4 --keep-monthly 3"
+  #     CHECK_CRON: "0 4 * * 1"
+  #   volumes:
+  #     - nextcloud_data:/source/userdata:ro
+  #     - html:/source/html:ro
+  #     - ${BACKUP_LOCAL_PATH:-/var/backups/nextcloud}:/backups
+  #   networks:
+  #     - nextcloud_net
+
 # ── Networks ────────────────────────────────────────────────
 networks:
   nextcloud_net:
