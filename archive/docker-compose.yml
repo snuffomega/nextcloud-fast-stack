@@ -1,24 +1,17 @@
 # ============================================================
-# Nextcloud Fast Stack 2026 — Homelab Edition
+# Nextcloud Fast Stack 2026
 # https://github.com/snuffomega/nextcloud-fast-stack
 #
-# HTTP-only Nextcloud stack for internal homelab use.
-# Access at: http://localhost:8080 or http://<your-ip>:8080
-#
-# For external access (HTTPS), use Tailscale, Cloudflare Tunnel,
-# or your own reverse proxy (Traefik, nginx, etc.).
-#
-# All persistent data lives in ./data/ next to this file:
-#   ./data/html/      Nextcloud app files
-#   ./data/userdata/  User files
-#   ./data/postgres/  PostgreSQL data
-#   ./data/redis/     Redis cache & AOF
+# Nextcloud runs internally on http://nextcloud-caddy:${CADDY_PORT}
+# No ports are exposed to the host — wire it to your own
+# reverse proxy, Tailscale, Cloudflare Tunnel, etc.
 #
 # Quick start:
-#   1. cp .env.example .env
-#   2. Set POSTGRES_PASSWORD, NEXTCLOUD_ADMIN_PASSWORD, NEXTCLOUD_DOMAIN
-#   3. docker compose up -d
-#   4. Visit http://localhost:8080
+#   cp .env.example .env   # fill in passwords
+#   docker compose up -d
+#
+# Unraid: append -f docker-compose.unraid.yml
+# FrankenPHP (experimental): cd frankenphp && docker compose up -d
 # ============================================================
 
 services:
@@ -45,8 +38,8 @@ services:
       NEXTCLOUD_TRUSTED_DOMAINS: ${NEXTCLOUD_DOMAIN:?Set NEXTCLOUD_DOMAIN in .env}
       TZ: ${TZ:-UTC}
     volumes:
-      - ./data/html:/var/www/html
-      - ./data/userdata:/var/www/html/data
+      - html:/var/www/html
+      - nextcloud_data:/var/www/html/data
       - ./config/php-fpm.conf:/usr/local/etc/php-fpm.d/zzz-custom.conf:ro
       - ./config/php-opcache.ini:/usr/local/etc/php/conf.d/opcache.ini:ro
     networks:
@@ -58,10 +51,10 @@ services:
       retries: 3
       start_period: 120s
 
-  # ── Caddy (HTTP proxy) ──────────────────────────────────
-  # Listens on http://0.0.0.0:8080 (no TLS).
-  # Routes PHP requests to Nextcloud FPM container.
-  # For external HTTPS, use Tailscale/Cloudflare/reverse proxy
+  # ── Caddy (internal PHP-FPM proxy) ──────────────────────
+  # Listens on CADDY_PORT (default 8080) inside the Docker network.
+  # Nothing is published to the host — point your reverse proxy here.
+  # Change CADDY_PORT in .env if 8080 conflicts with another container.
   nextcloud-caddy:
     image: caddy:2-alpine
     container_name: nextcloud-caddy
@@ -69,11 +62,13 @@ services:
     depends_on:
       nextcloud:
         condition: service_healthy
-    ports:
-      - "8080:8080"
+    environment:
+      CADDY_PORT: ${CADDY_PORT:-8080}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./data/html:/var/www/html:ro
+      - html:/var/www/html:ro
+      - caddy_data:/data
+      - caddy_config:/config
     networks:
       - nextcloud_net
     healthcheck:
@@ -94,7 +89,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       TZ: ${TZ:-UTC}
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - nextcloud_db:/var/lib/postgresql/data
       - ./config/postgres.conf:/etc/postgresql/postgresql.conf:ro
     command: postgres -c config_file=/etc/postgresql/postgresql.conf
     healthcheck:
@@ -120,7 +115,7 @@ services:
         --maxmemory 512mb
         --maxmemory-policy volatile-lru
     volumes:
-      - ./data/redis:/data
+      - nextcloud_redis:/data
     networks:
       - nextcloud_net
 
@@ -163,8 +158,8 @@ services:
       REDIS_PORT: 6379
       TZ: ${TZ:-UTC}
     volumes:
-      - ./data/html:/var/www/html
-      - ./data/userdata:/var/www/html/data
+      - html:/var/www/html
+      - nextcloud_data:/var/www/html/data
     networks:
       - nextcloud_net
 
@@ -201,9 +196,9 @@ services:
   #     FORGET_ARGS: "--keep-daily 7 --keep-weekly 4 --keep-monthly 3"
   #     CHECK_CRON: "0 4 * * 1"
   #   volumes:
-  #     - ./data/userdata:/source/userdata:ro
-  #     - ./data/html:/source/html:ro
-  #     - ${BACKUP_LOCAL_PATH:-./data/backups}:/backups
+  #     - nextcloud_data:/source/userdata:ro
+  #     - html:/source/html:ro
+  #     - ${BACKUP_LOCAL_PATH:-/var/backups/nextcloud}:/backups
   #   networks:
   #     - nextcloud_net
 
@@ -212,5 +207,11 @@ networks:
   nextcloud_net:
     driver: bridge
 
-# Data directories are created automatically by Docker on first run. 
-# All data lives in ./data/ relative to this docker-compose.yml file.
+# ── Volumes ──────────────────────────────────────────────
+volumes:
+  html:             # Nextcloud app files (shared: nextcloud ↔ caddy)
+  nextcloud_data:   # User data files
+  nextcloud_db:     # PostgreSQL data directory
+  nextcloud_redis:  # Redis data
+  caddy_data:       # Caddy configuration cache
+  caddy_config:     # Caddy runtime config

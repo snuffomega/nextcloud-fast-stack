@@ -1,81 +1,57 @@
 # ============================================================
-# Nextcloud Fast Stack 2026
-# https://github.com/snuffomega/nextcloud-fast-stack
+# FrankenPHP — Nextcloud Fast Stack 2026
+# EXPERIMENTAL: ~50–70ms TTFB via in-process PHP execution.
 #
-# Nextcloud runs internally on http://nextcloud-caddy:${CADDY_PORT}
-# No ports are exposed to the host — wire it to your own
-# reverse proxy, Tailscale, Cloudflare Tunnel, etc.
+# Replaces nextcloud + caddy with a single FrankenPHP container.
+# Listens internally on CADDY_PORT (default 8080) — no host
+# ports are exposed. Wire to your reverse proxy the same way
+# as the standard stack.
 #
 # All persistent data lives in ./data/ next to this file:
-#   ./data/html/      Nextcloud app files (shared: nextcloud ↔ caddy)
+#   ./data/html/      Nextcloud app files
 #   ./data/userdata/  User files
 #   ./data/postgres/  PostgreSQL data
 #   ./data/redis/     Redis AOF data
-#   ./data/caddy/     Caddy cache + config
 #
-# Quick start:
-#   cp .env.example .env   # fill in passwords
-#   docker compose up -d
+# First run: nextcloud-init populates app files and the DB,
+# then exits. FrankenPHP starts after init completes.
+# Subsequent restarts: init is skipped (restart: "no").
 #
-# Unraid: see UNRAID.md for appdata path overrides
-# FrankenPHP (experimental): see ../frankenphp/
+# Usage:
+#   cd frankenphp
+#   docker compose up -d --build
+#
+# Prerequisites: copy .env.example -> .env and fill in.
 # ============================================================
 
 services:
 
-  # ── Nextcloud (PHP-FPM) ────────────────────────────────
+  # ── FrankenPHP (PHP + Caddy, single container) ──────────
   nextcloud:
-    image: nextcloud:33-fpm-alpine
-    container_name: nextcloud
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nextcloud-frankenphp
     restart: unless-stopped
     depends_on:
+      nextcloud-init:
+        condition: service_completed_successfully
       nextcloud-db:
         condition: service_healthy
       nextcloud-redis:
         condition: service_started
     environment:
-      POSTGRES_HOST: nextcloud-db
-      POSTGRES_DB: ${POSTGRES_DB:-nextcloud}
-      POSTGRES_USER: ${POSTGRES_USER:-nextcloud}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      # FrankenPHP's embedded Caddy listens on CADDY_PORT (no TLS).
+      # Your reverse proxy connects to this port on the Docker network.
+      SERVER_NAME: ":${CADDY_PORT:-8080}"
       REDIS_HOST: nextcloud-redis
       REDIS_PORT: 6379
-      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER:-admin}
-      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?Set NEXTCLOUD_ADMIN_PASSWORD in .env}
       NEXTCLOUD_TRUSTED_DOMAINS: ${NEXTCLOUD_DOMAIN:?Set NEXTCLOUD_DOMAIN in .env}
       TZ: ${TZ:-UTC}
     volumes:
-      - ./data/html:/var/www/html
-      - ./data/userdata:/var/www/html/data
-      - ./config/php-fpm.conf:/usr/local/etc/php-fpm.d/zzz-custom.conf:ro
-      - ./config/php-opcache.ini:/usr/local/etc/php/conf.d/opcache.ini:ro
-    networks:
-      - nextcloud_net
-    healthcheck:
-      test: ["CMD-SHELL", "ps aux | grep -q '[p]hp-fpm' || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 120s
-
-  # ── Caddy (internal PHP-FPM proxy) ──────────────────────
-  # Listens on CADDY_PORT (default 8080) inside the Docker network.
-  # Nothing is published to the host — point your reverse proxy here.
-  # Change CADDY_PORT in .env if 8080 conflicts with another container.
-  nextcloud-caddy:
-    image: caddy:2-alpine
-    container_name: nextcloud-caddy
-    restart: unless-stopped
-    depends_on:
-      nextcloud:
-        condition: service_healthy
-    environment:
-      CADDY_PORT: ${CADDY_PORT:-8080}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./data/html:/var/www/html:ro
-      - ./data/caddy/data:/data
-      - ./data/caddy/config:/config
+      - /mnt/user/appdata/nextcloud/data/html:/var/www/html
+      - /mnt/user/appdata/nextcloud/data/userdata:/var/www/html/data
+    # No ports: block -- internal only, same pattern as the standard stack
     networks:
       - nextcloud_net
     healthcheck:
@@ -85,7 +61,34 @@ services:
       retries: 3
       start_period: 120s
 
-  # ── PostgreSQL 17 ─────────────────────────────────────
+  # ── Init (one-shot setup) ────────────────────────────────
+  # Uses the official Nextcloud image to copy app files and
+  # run occ maintenance:install into the shared html volume,
+  # then exits. FrankenPHP takes over as the PHP runtime.
+  nextcloud-init:
+    image: nextcloud:33-fpm-alpine
+    container_name: nextcloud-init
+    restart: "no"
+    entrypoint: ["/entrypoint.sh"]
+    command: ["true"]       # Run entrypoint (setup + install), then exit 0
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:-nextcloud-db}
+      POSTGRES_DB: ${POSTGRES_DB:-nextcloud}
+      POSTGRES_USER: ${POSTGRES_USER:-nextcloud}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER:-admin}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?Set NEXTCLOUD_ADMIN_PASSWORD in .env}
+      NEXTCLOUD_TRUSTED_DOMAINS: ${NEXTCLOUD_DOMAIN}
+    volumes:
+      - /mnt/user/appdata/nextcloud/html:/var/www/html
+      - ./config/postgres.conf:/etc/postgresql/postgresql.conf:ro
+    depends_on:
+      nextcloud-db:
+        condition: service_healthy
+    networks:
+      - nextcloud_net
+
+  # ── PostgreSQL 17 ────────────────────────────────────────
   nextcloud-db:
     image: postgres:17-alpine
     container_name: nextcloud-db
@@ -96,8 +99,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       TZ: ${TZ:-UTC}
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
-      - ./config/postgres.conf:/etc/postgresql/postgresql.conf:ro
+      - /mnt/user/appdata/nextcloud/postgres:/var/lib/postgresql/data
+      - /mnt/user/appdata/nextcloud/config/postgres.conf:/etc/postgresql/postgresql.conf:ro
     command: postgres -c config_file=/etc/postgresql/postgresql.conf
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nextcloud} -d ${POSTGRES_DB:-nextcloud}"]
@@ -108,9 +111,8 @@ services:
       - nextcloud_net
 
   # ── Redis 7 ─────────────────────────────────────────────
-  # AOF persistence (--appendonly yes) protects Nextcloud file locks
-  # across restarts. volatile-lru evicts only TTL-bearing cache keys,
-  # leaving lock entries (which may not carry a TTL) intact.
+  # AOF persistence protects file locks; volatile-lru evicts only
+  # TTL-bearing cache keys, leaving lock entries intact.
   nextcloud-redis:
     image: redis:7-alpine
     container_name: nextcloud-redis
@@ -122,28 +124,9 @@ services:
         --maxmemory 512mb
         --maxmemory-policy volatile-lru
     volumes:
-      - ./data/redis:/data
+      - /mnt/user/appdata/nextcloud/redis:/data
     networks:
       - nextcloud_net
-
-  # ── Imaginary (optional — preview generation offloading) ──
-  # Uncomment to offload thumbnail/preview generation to this
-  # Go-based microservice (~60% faster previews than built-in).
-  #
-  # After enabling, add to Nextcloud config.php:
-  #   'enabledPreviewProviders' => ['OC\Preview\Imaginary'],
-  #   'preview_imaginary_url'   => 'http://imaginary:9000',
-  #
-  # imaginary:
-  #   image: nextcloud/aio-imaginary:latest
-  #   container_name: nextcloud-imaginary
-  #   restart: unless-stopped
-  #   environment:
-  #     PORT: "9000"
-  #   cap_add:
-  #     - SYS_NICE
-  #   networks:
-  #     - nextcloud_net
 
   # ── Cron (background jobs) ──────────────────────────────
   # Required for activity feeds, notifications, share expiry,
@@ -157,16 +140,10 @@ services:
       nextcloud:
         condition: service_healthy
     environment:
-      POSTGRES_HOST: nextcloud-db
-      POSTGRES_DB: ${POSTGRES_DB:-nextcloud}
-      POSTGRES_USER: ${POSTGRES_USER:-nextcloud}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      REDIS_HOST: nextcloud-redis
-      REDIS_PORT: 6379
       TZ: ${TZ:-UTC}
     volumes:
-      - ./data/html:/var/www/html
-      - ./data/userdata:/var/www/html/data
+      - /mnt/user/appdata/nextcloud/html:/var/www/html
+      - /mnt/user/appdata/nextcloud/userdata:/var/www/html/data
     networks:
       - nextcloud_net
 
@@ -203,16 +180,19 @@ services:
   #     FORGET_ARGS: "--keep-daily 7 --keep-weekly 4 --keep-monthly 3"
   #     CHECK_CRON: "0 4 * * 1"
   #   volumes:
-  #     - ./data/userdata:/source/userdata:ro
-  #     - ./data/html:/source/html:ro
+  #     - /mnt/user/appdata/nextcloud/userdata:/source/userdata:ro
+  #     - /mnt/user/appdata/nextcloud/html:/source/html:ro
+  #### UPDATE BACKUP LOCAL PATH BELOW IF USING LOCAL REPOSITORY ####
   #     - ${BACKUP_LOCAL_PATH:-./data/backups}:/backups
   #   networks:
   #     - nextcloud_net
 
-# ── Networks ──────────────────────────────────────────────
+# ── Networks ────────────────────────────────────────────────
 networks:
   nextcloud_net:
     driver: bridge
+  # proxynet:        # Uncomment for Traefik
+  #   external: true
 
 # Data directories are created automatically by Docker on first run.
 # All data lives in ./data/ relative to this docker-compose.yml file.

@@ -1,14 +1,14 @@
 # Nextcloud Fast Stack 2026 -- Caddyfile
-# Caddy is an internal PHP-FPM proxy only. No TLS, no public ports.
-# CADDY_PORT is set via environment in docker-compose.yml (.env default: 8080).
-# Your reverse proxy (Traefik, Nginx, Caddy host instance, etc.) connects here.
+# Caddy proxies HTTP requests from :8080 to the Nextcloud PHP-FPM container.
+# This is an internal homelab setup — no TLS/HTTPS here.
+# For external HTTPS access, use Tailscale, Cloudflare Tunnel, or your own reverse proxy.
 
-:{$CADDY_PORT} {
+:8080 {
 
     encode zstd gzip
 
     # -- Security headers ----------------------------------------
-    # TLS headers (HSTS etc.) are omitted -- your reverse proxy handles these.
+    # TLS headers (HSTS, etc.) omitted — HTTP-only homelab setup.
     header {
         X-Content-Type-Options "nosniff"
         X-Frame-Options "SAMEORIGIN"
@@ -47,8 +47,6 @@
         root /var/www/html
         env front_controller_active true
         env modHeadersAvailable true
-        # Tell Nextcloud HTTPS is handled upstream by your reverse proxy
-        env HTTPS on
         trusted_proxies private_ranges
     }
 
