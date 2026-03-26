@@ -1,72 +1,133 @@
-# Nextcloud Fast Stack — Homelab Edition
+# Nextcloud Fast Stack — Primary Install
 
 [![Nextcloud](https://img.shields.io/badge/Nextcloud-33-0082C9?logo=nextcloud&logoColor=white)](https://hub.docker.com/_/nextcloud)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)](https://hub.docker.com/_/postgres)
 [![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)](https://hub.docker.com/_/redis)
 [![Caddy](https://img.shields.io/badge/Caddy-2-00ADD8?logo=caddy&logoColor=white)](https://hub.docker.com/_/caddy)
 
-**HTTP-only stack. All official images. No custom builds.**
-
-Nextcloud 33 FPM · PostgreSQL 17 · Redis 7 · Caddy 2 · PHP JIT enabled · ~100–150ms TTFB
-
-Simple Docker composition for homelab Nextcloud. All services run on internal Docker network. Caddy proxy handles HTTP requests on port 8080. You control external access (Tailscale, Cloudflare Tunnel, reverse proxy, etc.).
+This repository provides a single primary install flow that works with an
+external TLS tunnel (Cloudflare/Tailscale) forwarding to the stack, and also
+supports running local TLS from Caddy. A short local HTTP-only reference is
+available at docs/LOCAL-HTTP.md.
 
 ---
 
-## Architecture
+## Container Stack
 
 ```
-docker compose up -d
-         |
-         ├─ nextcloud      PHP-FPM 8.3 · PostgreSQL/Redis client
-         ├─ nextcloud-cron Background jobs every 5 min
-         ├─ nextcloud-db   PostgreSQL 17 database
-         ├─ nextcloud-redis Redis 7 session/file lock cache (AOF persistent)
-         └─ nextcloud-caddy HTTP proxy (port 8080)
+docker-compose.yml
+         |───────  core containers  ──────────────────────────────
+         ├─ nextcloud               nextcloud:33-fpm-alpine
+         ├─ nextcloud-caddy         caddy:2-alpine
+         ├─ nextcloud-db            postgres:17-alpine
+         ├─ nextcloud-redis         redis:7-alpine
+         ├─ nextcloud-cron          nextcloud:33-fpm-alpine
+         └─ nextcloud-init          nextcloud:33-fpm-alpine
                 |
                 v
-    Access: http://localhost:8080
-            http://<your-home-ip>:8080
+         |───────  optional: uncommit in compose  ────────────────
+         ├─ imaginary               nextcloud/aio-imaginary:latest
+         └─ nextcloud-backup        mazzolino/restic:1
 ```
 
-All persistent data lives in `./data/` next to `docker-compose.yml`:
-- `./data/html/` — Nextcloud app files
-- `./data/userdata/` — User files and metadata
-- `./data/postgres/` — PostgreSQL database
-- `./data/redis/` — Redis AOF persistence
 
----
 
-## Quick Start
 
-**Prerequisites:** Docker Engine 24+ and Docker Compose v2
+Quick checklist
+- Copy `.env.example` → `.env` and set secrets.
+- Choose the hostnames you will use and set `NEXTCLOUD_DOMAIN`, `NEXTCLOUD_EXTERNAL_HOST`, and `NEXTCLOUD_LOCAL_HOST` as appropriate.
+- Keep `AUTO_INIT=true` to run the helper automatically (recommended).
+- Start the stack with `docker compose up -d` and monitor `nextcloud-init`.
+
+## Host configuration
+
+- Set `NEXTCLOUD_DOMAIN` to the hostname your external tunnel will expose (for example `cloud.example.com`).
+- Set `NEXTCLOUD_EXTERNAL_HOST` if that tunnel publishes a different hostname; Compose will include it in `NEXTCLOUD_TRUSTED_DOMAINS` automatically.
+- If you also expose the stack locally via TLS, set `NEXTCLOUD_LOCAL_HOST` to that certificate hostname (for example `nextcloud.local`), or leave it blank to skip the local alias.
+- Keep `OVERWRITEPROTOCOL=https` when the stack is reached over TLS (either from the tunnel or from Caddy), and leave it empty when you only run HTTP.
+
+Quick Start
 
 ```bash
 git clone https://github.com/snuffomega/nextcloud-fast-stack.git
 cd nextcloud-fast-stack
 cp .env.example .env
+# Edit .env: set POSTGRES_PASSWORD, NEXTCLOUD_ADMIN_PASSWORD, NEXTCLOUD_DOMAIN, NEXTCLOUD_EXTERNAL_HOST, NEXTCLOUD_LOCAL_HOST
+docker compose up -d
+docker compose logs -f nextcloud nextcloud-init
 ```
 
-Edit `.env` and set:
+What to set in `.env`
 
 ```env
-POSTGRES_PASSWORD=randomly_generate_a_strong_password
-NEXTCLOUD_ADMIN_PASSWORD=another_strong_password
-NEXTCLOUD_DOMAIN=localhost          # or 192.168.1.100, 10.0.0.50, etc.
+POSTGRES_PASSWORD=generate_strong_password
+NEXTCLOUD_ADMIN_PASSWORD=generate_strong_password
+NEXTCLOUD_DOMAIN=nextcloud.yourdomain.com            # primary tunnel or local TLS host
+NEXTCLOUD_EXTERNAL_HOST=nextcloud.yourdomain.com     # tunnel endpoint you expose externally
+NEXTCLOUD_LOCAL_HOST=nextcloud.local                 # optional local TLS alias (leave empty to skip)
+AUTO_INIT=true                                       # runs one-time occ helper, set 'false' to run cmds manually below
+
 ```
 
-Start the stack:
+- Notes
+- By default the stack expects TLS to be terminated by an external tunnel
+    (Cloudflare/Tailscale) which forwards traffic to the host port mapped to
+    Caddy (`${CADDY_HTTP_PORT:-8080}` by default). If you prefer local TLS, publish
+    `443:443` for the Caddy service and enable the TLS block in `Caddyfile`.
+- Host port published for Caddy is configurable (for example `8443:443`).
+- Setting `NEXTCLOUD_EXTERNAL_HOST` and `NEXTCLOUD_LOCAL_HOST` in `.env` before
+    the initial install ensures both hostnames are trusted automatically.
+
+What the helper does
+
+- The `nextcloud-init` one-time helper waits for the initial web installer to
+    finish, then runs safe, idempotent `occ` commands:
+    - `db:add-missing-indices`
+    - `maintenance:repair --include-expensive`
+    - set `default_phone_region` and `maintenance_window_start`
+    - set `overwriteprotocol` when `OVERWRITEPROTOCOL` is set in `.env`
+
+Manual commands (if you disable automation AUTO_INIT in .env)
 
 ```bash
-docker compose up -d
-docker compose logs -f nextcloud
+# Set HTTPS protocol
+docker exec -u www-data nextcloud php occ config:system:set overwriteprotocol --value="https"
+
+# Add missing DB indices
+docker exec -u www-data nextcloud php occ db:add-missing-indices
+
+# Repair/optimize mimetype handling
+docker exec -u www-data nextcloud php occ maintenance:repair --include-expensive
+
+# Default phone region
+docker exec -u www-data nextcloud php occ config:system:set default_phone_region --value="US"
+
+# Maintenance window
+docker exec -u www-data nextcloud php occ config:system:set maintenance_window_start --value=2
 ```
 
-Wait for `nextcloud` container to report "healthy", then visit:
-- **http://localhost:8080** (if running locally)
-- **http://192.168.1.100:8080** (replace with your home IP)
+Reference: local HTTP-only setup is in docs/LOCAL-HTTP.md.
 
-Complete the Nextcloud setup wizard. Database is pre-populated; just create admin account.
+Troubleshooting
+
+- If containers are not healthy: `docker compose ps` and `docker logs <service>`.
+- If DB connection fails: `docker exec nextcloud-db psql -U nextcloud -d nextcloud -c "SELECT 1"`.
+- Cron and Redis checks are listed in the original Troubleshooting section.
+
+Updating
+
+```bash
+docker compose pull
+docker compose up -d
+docker exec -u www-data nextcloud php occ upgrade
+docker exec -u www-data nextcloud php occ maintenance:mode --off
+```
+
+---
+
+If you want I will tidy the Troubleshooting section and add a short Tailscale
+note, otherwise this primary flow is ready and local HTTP is documented in
+`docs/LOCAL-HTTP.md`.
 
 ---
 
@@ -79,131 +140,75 @@ docker exec -u www-data nextcloud php occ upgrade
 docker exec -u www-data nextcloud php occ maintenance:mode --off
 ```
 
-All images are official. `docker pull` automatically gets latest minor/patch version within the pinned major tag.
-
 ---
 
-## Post-Install Recommendations
+## Optional Containers
 
-```bash
-# Verify installation
-docker exec -u www-data nextcloud php occ status
+### Enable Imaginary (Faster Preview Generation)
 
-# Add missing DB indices (clears admin warning)
-docker exec -u www-data nextcloud php occ db:add-missing-indices
-
-# Convert file cache to bigint for future growth
-docker exec -u www-data nextcloud php occ db:convert-filecache-bigint
-```
-
-Check **Admin → Basic settings** — "Last cron executed" should show within 10 minutes of deploy.
-
----
-
-## Managing Trusted Domains
-
-**Important:** The `NEXTCLOUD_DOMAIN` environment variable only sets trusted domains during **first installation**. Once installed, they're permanent in `config.php`.
-
-### Add a New Domain or IP After Installation
-
-```bash
-# Add a new trusted domain
-docker exec -u www-data nextcloud php occ config:system:set trusted_domains 1 --value="192.168.1.100"
-
-# You can have multiple — just increment the index:
-docker exec -u www-data nextcloud php occ config:system:set trusted_domains 2 --value="my.domain.com"
-
-# View all trusted domains
-docker exec nextcloud cat /var/www/html/config/config.php | grep -A 10 "trusted_domains"
-```
-
-### Yes, You Can Have Both IP AND Domain
-
-Nextcloud's `trusted_domains` is an array—include as many as you need:
-```php
-'trusted_domains' => array(
-  0 => 'localhost',
-  1 => '10.10.1.161',              // Unraid server IP
-  2 => 'my-nextcloud.example.com', // External domain
-  3 => '192.168.1.100',            // Another IP
-  4 => 'nextcloud.local',          // Local hostname
-),
-```
-
-Each access URL is checked against this list. Use `-u www-data` to avoid permission issues.
-
----
-
-## External Access (HTTPS)
-
-This stack is HTTP-only on port 8080. For external HTTPS access, use one of these:
-
-### Option A: Tailscale
-```bash
-# On your home server
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
-```
-Then access from anywhere as: `http://<tailscale-hostname>:8080`
-
-### Option B: Cloudflare Tunnel
-```bash
-docker run -it --rm cloudflare/cloudflared:latest login
-docker run -d cloudflare/cloudflared:latest tunnel run
-```
-Then tunnel name → local port 8080 → DNS CNAME to your domain.
-
-### Option C: Your Own Reverse Proxy
-- **Traefik**: Point entrypoint to `http://localhost:8080`
-- **Caddy**: Similar to above
-- **Nginx**: http upstream to Caddy service
-
----
-
-## Optional Features
-
-**Enable Imaginary** (faster thumbnail generation)
 1. Uncomment `imaginary:` block in `docker-compose.yml`
-2. Restart: `docker compose up -d`
+2. `docker compose up -d`
 3. Add to Nextcloud `config/config.php`:
 ```php
 'enabledPreviewProviders' => ['OC\Preview\Imaginary'],
 'preview_imaginary_url'   => 'http://imaginary:9000',
 ```
 
-**Enable Backups** (encrypted incremental via Restic)
+### Enable Backups (Encrypted via Restic)
+
 1. Uncomment `nextcloud-backup:` block in `docker-compose.yml`
 2. Set in `.env`:
 ```env
 BACKUP_PASSWORD=strong-encryption-key
-BACKUP_REPOSITORY=/backups/nextcloud       # local
-# or: s3://..., b2://..., sftp://...
-BACKUP_CRON=0 3 * * *                      # daily 3am
+BACKUP_REPOSITORY=/backups/nextcloud  # or s3://..., b2://..., sftp://...
+BACKUP_CRON=0 3 * * *                 # Daily at 3 AM
 ```
-3. Restart: `docker compose up -d`
-4. Test: `docker exec nextcloud-backup restic snapshots`
+3. `docker compose up -d`
 
-**Tune PHP-FPM** (`config/php-fpm.conf`)
-- 16GB RAM → `pm.max_children = 150`
-- 8GB RAM → `pm.max_children = 80`
-- 4GB RAM → `pm.max_children = 40`
+### Tune PHP-FPM
 
-**Check JIT is enabled:**
-```bash
-docker exec nextcloud php -r "var_dump(opcache_get_status()['jit']);"
-```
+Edit `config/php-fpm.conf`, adjust `pm.max_children`:
+- **16GB RAM** → `150`
+- **8GB RAM** → `80`
+- **4GB RAM** → `40`
+
+Then: `docker compose restart nextcloud`
 
 ---
 
+## Managing Trusted Domains
+
+**Important:** `NEXTCLOUD_DOMAIN` in `.env` only applies at **first install**. After that, domains are saved in `config.php`.
+
+**Add a new domain/IP:**
+```bash
+docker exec -u www-data nextcloud php occ config:system:set trusted_domains 1 --value="192.168.1.100"
+docker exec -u www-data nextcloud php occ config:system:set trusted_domains 2 --value="my.domain.com"
+docker exec -u www-data nextcloud php occ config:system:set trusted_domains 3 --value="nextcloud.local"
+```
+
+**View current domains:**
+```bash
+docker exec nextcloud cat /var/www/html/config/config.php | grep -A 10 "trusted_domains"
+```
+
+You can have both IPs and domains in the same instance. Increment the index number for each additional domain.
+
+
+
+
+
+
+
 ## Troubleshooting
 
-**Container unhealthy?**
+**Containers not healthy?**
 ```bash
 docker compose ps
 docker logs nextcloud
 ```
 
-**Database won't connect?**
+**Database connection error?**
 ```bash
 docker exec nextcloud-db psql -U nextcloud -d nextcloud -c "SELECT 1"
 ```
@@ -214,10 +219,13 @@ docker logs nextcloud-cron
 docker exec -u www-data nextcloud php occ background:cron
 ```
 
-**Redis connection issues?**
+**Redis issues?**
 ```bash
 docker exec nextcloud-redis redis-cli PING
 ```
+
+**Can't access from another machine?**
+See "Managing Trusted Domains" — add your IP to the trusted list.
 
 ---
 

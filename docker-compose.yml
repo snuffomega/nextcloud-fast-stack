@@ -2,11 +2,10 @@
 # Nextcloud Fast Stack 2026 — Homelab Edition
 # https://github.com/snuffomega/nextcloud-fast-stack
 #
-# HTTP-only Nextcloud stack for internal homelab use.
-# Access at: http://localhost:8080 or http://<your-ip>:8080
+# HTTP Nextcloud stack with HTTPS tunneling options (Cloudflare/Tailscale).
+# Access at: https://your-subdomain.com (via tunnel)
 #
-# For external access (HTTPS), use Tailscale, Cloudflare Tunnel,
-# or your own reverse proxy (Traefik, nginx, etc.).
+# For local HTTPS, uncomment alt ports/Caddyfile.
 #
 # All persistent data lives in ./data/ next to this file:
 #   ./data/html/      Nextcloud app files
@@ -42,7 +41,11 @@ services:
       REDIS_PORT: 6379
       NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER:-admin}
       NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?Set NEXTCLOUD_ADMIN_PASSWORD in .env}
-      NEXTCLOUD_TRUSTED_DOMAINS: ${NEXTCLOUD_DOMAIN:?Set NEXTCLOUD_DOMAIN in .env}
+      # Trust the primary install host plus any tunnel/local hostnames the user configures.
+      NEXTCLOUD_TRUSTED_DOMAINS: >-
+        ${NEXTCLOUD_DOMAIN:?Set NEXTCLOUD_DOMAIN in .env}
+        ${NEXTCLOUD_EXTERNAL_HOST:+ ${NEXTCLOUD_EXTERNAL_HOST}}
+        ${NEXTCLOUD_LOCAL_HOST:+ ${NEXTCLOUD_LOCAL_HOST}}
       TZ: ${TZ:-UTC}
     volumes:
       - ./data/html:/var/www/html
@@ -69,15 +72,26 @@ services:
     depends_on:
       nextcloud:
         condition: service_healthy
+    # Default: publish TLS on host port 443. If you need a tunnel that forwards
+    # to an HTTP port, configure the tunnel to forward to the host HTTP port and
+    # optionally enable the mapping below (commented by default).
     ports:
-      - "8080:8080"
+      - "${CADDY_TLS_PORT:-443}:443"
+    # Optional: publish HTTP for external tunnels (uncomment if you require it)
+    # ports:
+    #   - "${CADDY_HTTP_PORT:-8080}:8080"
+    # Alternative: Uncomment the block below when you switch to local HTTPS and
+    # have updated Caddyfile/TLS hosts to match NEXTCLOUD_DOMAIN (set this to the
+    # certificate host/email before restarting).
+    # ports:
+    #   - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./data/html:/var/www/html:ro
     networks:
       - nextcloud_net
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:${CADDY_PORT:-8080}/status.php 2>/dev/null | grep -q installed || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:${CADDY_HTTP_PORT:-8080}/status.php 2>/dev/null | grep -q installed || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -165,6 +179,38 @@ services:
     volumes:
       - ./data/html:/var/www/html
       - ./data/userdata:/var/www/html/data
+    networks:
+      - nextcloud_net
+
+  # ── Init helper (runs once) ─────────────────────────────────
+  # Runs a short script to apply recommended occ fixes after the first
+  # install completes. Controlled by `AUTO_INIT` in .env (true/false).
+  nextcloud-init:
+    image: nextcloud:33-fpm-alpine
+    container_name: nextcloud-init
+    restart: "no"
+    depends_on:
+      nextcloud:
+        condition: service_healthy
+      nextcloud-db:
+        condition: service_healthy
+    environment:
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER:-admin}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-nextcloud}
+      POSTGRES_USER: ${POSTGRES_USER:-nextcloud}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_HOST: nextcloud-redis
+      REDIS_PORT: 6379
+      AUTO_INIT: ${AUTO_INIT:-true}
+      OVERWRITEPROTOCOL: ${OVERWRITEPROTOCOL}
+      DEFAULT_PHONE_REGION: ${DEFAULT_PHONE_REGION:-US}
+      MAINTENANCE_WINDOW_START: ${MAINTENANCE_WINDOW_START:-2}
+    volumes:
+      - ./data/html:/var/www/html:rw
+      - ./data/userdata:/var/www/html/data:rw
+      - ./bin/init-nextcloud.sh:/init-nextcloud.sh:ro
+    entrypoint: ["/bin/sh","-c","/init-nextcloud.sh"]
     networks:
       - nextcloud_net
 
